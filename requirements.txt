@@ -1,0 +1,31 @@
+# Voice Assistant Requirements
+# Install with: pip install -r requirements.txt
+
+# Anthropic / LLM
+anthropic
+
+# Audio I/O
+pyaudio
+soundfile
+
+# ML / AI Models
+torch
+numpy
+openai-whisper        # imported as: import whisper
+silero-vad            # imported as: from silero_vad import ...
+openwakeword
+
+# TTS / Voice
+kokoro
+rvc-python            # imported as: from rvc_python.infer import ...
+
+# Web / HTTP
+httpx
+requests
+
+# Spotify integration
+spotipy
+
+# Utilities
+python-dotenv         # imported as: from dotenv import load_dotenv
+pydantic
