@@ -2,6 +2,7 @@ from . import weather
 from .govee.controller import govee_controller
 from . import spotify
 from . import radarr
+from . import sonarr
 from pydantic import BaseModel, Field
 from typing import Optional
 from log import get_logger
@@ -38,6 +39,16 @@ if radarr.radarr:
         radarr.radarr.list_movies,
         radarr.radarr.check_queue,
         radarr.radarr.disk_space,
+    ])
+
+# Sonarr
+if sonarr.sonarr:
+    TOOLS.extend([
+        sonarr.sonarr.search_series,
+        sonarr.sonarr.add_series,
+        sonarr.sonarr.list_series,
+        sonarr.sonarr.search_season,
+        sonarr.sonarr.search_episode
     ])
 
 class EndCoversation(BaseModel):
