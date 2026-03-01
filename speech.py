@@ -118,14 +118,12 @@ class Speech:
         if not text or not text.strip():
             raise ValueError("[Speech] speak() called with empty text.")
 
-        timestamp = datetime.now().strftime("model_output")
-        out_path = os.path.join(OUTPUT_DIR, f"{timestamp}.wav")
-
         tts_audio = self._tts(text)
 
         if RVC_ENABLE:
             tts_audio = self._rvc(tts_audio)
-            
+
+        out_path = os.path.join(OUTPUT_DIR, "model_output.wav")
         sf.write(out_path, tts_audio, RECEIVE_SAMPLE_RATE)
         return out_path
 

@@ -2,7 +2,6 @@ import logging
 
 LOG_FILE = "session.log"
 
-
 def setup_logging():
     """Call once at startup. Configures root logger to write to stdout and session.log."""
     fmt = logging.Formatter("[%(name)s] %(message)s")

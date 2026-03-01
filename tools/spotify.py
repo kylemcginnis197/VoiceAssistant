@@ -4,21 +4,15 @@ from spotipy.exceptions import SpotifyException
 from pydantic import BaseModel, Field
 from typing import Optional, List
 
-VALID_MEDIA_TYPES = {"album", "artist", "playlist", "track", "show", "episode", "audiobook"}
+VALID_MEDIA_TYPES = {"album", "artist", "track"}
 
-class PausePlayback(BaseModel):
+class BaseSpotify(BaseModel):
     pass
 
 class StartPlayback(BaseModel):
     spotify_uris: Optional[List[str]] = Field(
         description="Play a specific song, artist, album, etc by providing a URI or list of URIs. URIs can be found via the spotify search tool. Providing multiple will act as a temporary playlist. If none are provided then it will resume the current song."
     )
-
-class NextTrack(BaseModel):
-    pass
-
-class PreviousTrack(BaseModel):
-    pass
 
 class SearchSpotify(BaseModel):
     search_query: Optional[str] = Field(
@@ -49,7 +43,7 @@ from os import getenv
 
 class Spotify:
     def __init__(self):
-        scope = "user-modify-playback-state user-read-playback-state user-read-currently-playing playlist-read-private user-library-read user-read-recently-played"
+        scope = "user-modify-playback-state user-read-playback-state user-read-currently-playing playlist-read-private user-library-read user-read-recently-played user-follow-read"
         self.sp = spotipy.Spotify(
             auth_manager=SpotifyOAuth(
                 client_id=getenv("SPOTIPY_CLIENT_ID"),
@@ -60,7 +54,7 @@ class Spotify:
             )
         )
 
-    def pause_playback(self, args: PausePlayback):
+    def pause_playback(self, args: BaseSpotify = None):
         """Pause the user's active Spotify playback."""
         try:
             self.sp.pause_playback()
@@ -78,14 +72,14 @@ class Spotify:
                 return "Playback already playing."
             return f"Failed to start music, reason: {e}"
 
-    def next_track(self, args: NextTrack):
+    def next_track(self, args: BaseSpotify = None):
         """Skip to the next track in the user's Spotify queue."""
         try:
             self.sp.next_track()
         except SpotifyException as e:
             return f"Failed to skip track, reason: {e}"
 
-    def previous_track(self, args: PreviousTrack):
+    def previous_track(self, args: BaseSpotify = None):
         """Go back to the previous track in the user's Spotify queue."""
         try:
             self.sp.previous_track()
@@ -146,52 +140,41 @@ class Spotify:
                 for a in results["artists"]["items"]
             ]
 
-        if "playlists" in results:
-            out["playlists"] = [
-                {
-                    "name": p["name"],
-                    "owner": p["owner"]["display_name"],
-                    "uri": p["uri"],
-                    "total_tracks": p["tracks"]["total"],
-                }
-                for p in results["playlists"]["items"] if p
-            ]
-
-        if "shows" in results:
-            out["shows"] = [
-                {
-                    "name": s["name"],
-                    "publisher": s["publisher"],
-                    "uri": s["uri"],
-                }
-                for s in results["shows"]["items"]
-            ]
-
-        if "episodes" in results:
-            out["episodes"] = [
-                {
-                    "name": e["name"],
-                    "show": e.get("show", {}).get("name"),
-                    "uri": e["uri"],
-                    "duration_ms": e.get("duration_ms"),
-                }
-                for e in results["episodes"]["items"]
-            ]
-
-        if "audiobooks" in results:
-            out["audiobooks"] = [
-                {
-                    "name": b["name"],
-                    "authors": [a["name"] for a in b.get("authors", [])],
-                    "uri": b["uri"],
-                }
-                for b in results["audiobooks"]["items"]
-            ]
-
         return out
 
+    def get_recently_played_songs(self, args: BaseSpotify = None):
+        """Gets the previous 50 songs played on the user's spotify account. Additionally, song URI's and Album URI's can be used to play the song/album using start_playback tool"""
+        try:
+            results = self.sp.current_user_recently_played(limit=50)
+        except SpotifyException as e:
+            return f"Failed to get recently played songs, reason: {e}"
+        
+        if items := results.get("items", None):
+            user_tracks = []
 
-try:
-    sp = Spotify()
-except Exception:
-    sp = None
+            for playback in items:
+                if track := playback.get("track", None):
+                    song_name = track.get("name", None)
+                    song_uri = track.get("uri", None)
+                    
+                    if song_name is None or song_uri is None:
+                        continue
+
+                    album = track.get("album", {})
+                    artists = [
+                        {
+                            "name": artist.get("name"),
+                            "uri": artist.get("uri"),
+                        } for artist in track.get("artists", [])
+                    ]
+                
+                    user_tracks.append({
+                        "song_name": track.get("name", "n/a"),
+                        "song_uri": track.get("uri", "n/a"),
+                        "artists": artists,
+                        "album_name": album.get("name", "n/a"),
+                        "album_uri": album.get("uri", "n/a")
+                    })
+
+            return user_tracks
+sp = Spotify()

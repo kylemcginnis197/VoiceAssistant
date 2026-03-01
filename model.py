@@ -1,6 +1,10 @@
 import anthropic
+import chromadb
 import inspect
 import json
+import time
+from pydantic import BaseModel, Field
+from config import TOOL_EMBEDDINGS_RAG, TOOL_RAG_TOP_K
 
 from log import get_logger
 
@@ -48,17 +52,64 @@ def generate_declarations(tools: list[object]) -> list[dict]:
 
     return res
 
+class ModelOutput(BaseModel):
+    speech: str = Field(description="The final message that will be spoken to the user.")
+
+class ToolRetrieval:
+    def __init__(self, tools: list[dict]):
+        # ChromaDB in memory
+        self.client = chromadb.Client()
+
+        self.collection = self.client.get_or_create_collection(
+            name="tools",
+            metadata={"hnsw:space": "cosine"}
+        )
+
+        self.collection.upsert(
+            ids=[t["name"] for t in tools],
+            documents=[t.get("description", t["name"]) for t in tools],
+            metadatas=[{"schema": json.dumps(t)} for t in tools],  # store full def
+        )
+
+    def retrieve_tools(self, query: list[str], top_k: int = 4) -> list[dict]:
+        results = self.collection.query(query_texts=query, n_results=top_k)
+        return [json.loads(tool["schema"]) for tool in results["metadatas"][0]]
+
+
 class Model:
-    def __init__(self, tools: list[object], web_search: bool = True) -> None:
-        self.client = anthropic.Client()
+    def __init__(self, tools: list[object], always_included_tools: list[object], web_search: bool = True) -> None:
+        self.client = anthropic.AsyncAnthropic()
         self.input_token_limit = 75_000
         self.output_token_limit = 4_096
         self.anthropic_model = "claude-sonnet-4-6-20250929"
 
+        # model options
+        self.beta_supported = ["claude-opus-4-6", "claude-sonnet-4-6"]
+        self.web_search_supported = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929"]
+        self.output_config_supported = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-sonnet-4-5-20250929"]
+        self.thinking_model = "claude-sonnet-4-6-20250929"
+
+        # create context window
         self.context_window = []
 
         self.tool_references = tools
-        self.tools = generate_declarations(tools)
+        self.always_include_tool_references = always_included_tools
+
+        if TOOL_EMBEDDINGS_RAG:
+            self.tool_retrieval = ToolRetrieval(tools=generate_declarations(tools))
+        else:
+            self.tools = generate_declarations(tools)
+
+        self.always_include_tools = generate_declarations(always_included_tools)
+
+        schema = ModelOutput.model_json_schema()
+        schema["additionalProperties"] = False
+        self.output_schema = {
+            "format": {
+                "type": "json_schema",
+                "schema": schema
+            }
+        }
 
         try:
             with open(file="prompts/system_prompt.md", mode="r") as file:
@@ -68,18 +119,17 @@ class Model:
             log.error(f"Failed to load system prompt: {e}")
             self.system_prompt = None
 
-        if web_search:
-            self.tools.append({
-                "type": "web_search_20260209",
-                "name": "web_search",
-                "user_location": {
-                    "type": "approximate",
-                    "city": "Omaha",
-                    "region": "Nebraska",
-                    "country": "US",
-                    "timezone": "America/Chicago"
-                }
-            })
+        self.web_search_tool = {
+            "type": "web_search_20260209",
+            "name": "web_search",
+            "user_location": {
+                "type": "approximate",
+                "city": "Omaha",
+                "region": "Nebraska",
+                "country": "US",
+                "timezone": "America/Chicago"
+            }
+        } if web_search else None
 
     def clear_context_window(self):
         self.context_window = []
@@ -98,12 +148,14 @@ class Model:
         elif model_name == "sonnet 4.6":
             self.anthropic_model = "claude-sonnet-4-6"
         elif model_name == "sonnet 4.5":
-            self.anthropic_model = "claude-sonnet-4-5-20250929"
+            self.thinking_model = "claude-sonnet-4-5-20250929"
+        elif model_name == "haiku 4.5":
+            self.thinking_model = "claude-haiku-4-5-20251001"
         else:
             self.anthropic_model = "claude-sonnet-4-6"
 
     async def execute_tool(self, tool_name, tool_args):
-        for tool in self.tool_references:
+        for tool in self.tool_references + self.always_include_tool_references:
             if tool.__name__ == tool_name:
                 parameter = get_pydantic_parameters(tool)
 
@@ -133,6 +185,8 @@ class Model:
         }
 
     async def call_model(self, input: str) -> str:
+        ts = time.monotonic()
+
         self.context_window.append({
             "role": "user",
             "content": input
@@ -140,37 +194,65 @@ class Model:
 
         while True:
             # print(f"context window: {self.context_window}")
+            args = {}
+            
+            args["model"] = self.thinking_model
+            args["max_tokens"] = self.output_token_limit
+            args["system"] = self.system_prompt
 
-            with self.client.beta.messages.stream(
-                betas=["compact-2026-01-12"],
-                model=self.anthropic_model,
-                max_tokens=self.output_token_limit,
-                system=self.system_prompt,
-                thinking={"type": "adaptive"},
-                tools=self.tools,
-                messages=self.context_window,
-                context_management={
-                    "edits": [{
-                        "type": "compact_20260112",
-                        "trigger": {"type": "input_tokens", "value": self.input_token_limit},
-                        "pause_after_compaction": True,
-                        "instructions": "Focus on preserving big picture ideas and themes and tool call responses"
-                    }]
-                }
-            ) as stream:
-                response = stream.get_final_message()
+            if TOOL_EMBEDDINGS_RAG:
+                last_couple_user_requests = [context["content"] for context in self.context_window if context["role"] == "user" and isinstance(context["content"], str)]
 
+                if len(last_couple_user_requests) > 2:
+                    last_couple_user_requests = last_couple_user_requests[-2:]
+
+                tools = self.tool_retrieval.retrieve_tools(query=last_couple_user_requests, top_k=TOOL_RAG_TOP_K) + self.always_include_tools
+            else:
+                tools = self.tools + self.always_include_tools
+
+            if self.web_search_tool and args["model"] in self.web_search_supported:
+                tools = tools + [self.web_search_tool]
+
+            args["tools"] = tools
+            args["messages"] = self.context_window
+
+            if args["model"] in self.output_config_supported:
+                args["output_config"] = self.output_schema
+
+            # Compaction only supported on opus 4.6 or sonnet 4.6
+            if args["model"] in self.beta_supported:
+                args["betas"] = ["compact-2026-01-12"]
+                args["thinking"] = {"type": "disabled"} # adaptive, enabled, or disabled (adaptive + enabled only available on opus 4.6 or sonnet 4.6)
+                args["context_management"] = {
+                        "edits": [{
+                            "type": "compact_20260112",
+                            "trigger": {"type": "input_tokens", "value": self.input_token_limit},
+                            "pause_after_compaction": True,
+                            "instructions": "Focus on preserving big picture ideas and themes and tool call responses"
+                        }]
+                    }
+
+            # Call model.
+            print(f"[model] Called model ({time.monotonic() - ts:.2f}s) with tools: {[tool.get('name') for tool in args['tools'] if tool.get('name', None) is not None]}")
+
+            async with self.client.beta.messages.stream(**args) as stream:
+                response = await stream.get_final_message()
+
+            usage = response.usage
             stop_reason = response.stop_reason
             content = response.content
 
-            if stop_reason == "end_turn" or stop_reason == "max_tokens":
-                output = ""
+            print(f"[model] Response generated ({time.monotonic() - ts:.2f}s) input tokens: {usage.input_tokens} output tokens: {usage.output_tokens}")
 
+            if stop_reason == "end_turn" or stop_reason == "max_tokens":
                 for block in content:
                     if block.type == "text":
-                        output += block.text
-
-                return output
+                        try:
+                            obj = json.loads(block.text)
+                            return obj.get("speech", block.text)
+                        except Exception:
+                            return block.text
+                return None
             elif stop_reason == "tool_use":
                 self.context_window.append({"role": "assistant", "content": content})
 
