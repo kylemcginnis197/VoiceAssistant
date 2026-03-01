@@ -34,3 +34,4 @@ spotipy
 # Utilities
 python-dotenv         # imported as: from dotenv import load_dotenv
 pydantic
+chromadb
