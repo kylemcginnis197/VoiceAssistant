@@ -13,6 +13,13 @@ A speech-to-speech AI voice assistant powered by Claude. It listens for a wake w
 - **Weather** - Current conditions via WeatherAPI
 - **Context Management** - Automatic token compaction for long conversations
 
+## Todos
+- Add Qwen3 TTS voice model (replace RVC & Kokoro voice)
+- Add Speaker Diarization to differentiate voices
+- Add daily/periodic task scheduling to activate prompts or read TTS messages
+- Improve prompting for more quality responses
+- Add AI vision capabilities
+
 ## Project Structure
 
 ```
