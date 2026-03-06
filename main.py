@@ -1,30 +1,25 @@
+import audio as audio_module
 import asyncio
+import pyaudio
 import time
+import config
+from model import Model
+from speech import Speech, Qwen3Speech
+from tools.tools import _end_conversation
+from tools.scheduler import _schedule_task
+from tools.subagents import _start_subagent
+from cron import cron_scheduler
+from log import get_logger
 
-from log import setup_logging, get_logger
-setup_logging()
+# Add logger
 log = get_logger("main")
 log.info(f"[STARTUP] main.py started")
 
-from dotenv import load_dotenv
-load_dotenv()
-
-import pyaudio
-import audio as audio_module
-from model import Model
-from speech import Speech
-from pydantic import BaseModel, Field
-from typing import Optional
-from tools.tools import TOOLS, _end_conversation, _schedule_task, _start_subagent
-from audio import wait_for_wake_word, flush_queues, open_streams, wait_for_speech_start, wait_for_speech_end, mic_buffer, transcribe_audio, play_wav_file
-import config
-from config import AI_MODEL, INPUT_TOKEN_LIMIT, OUTPUT_TOKEN_LIMIT, CONVERSATION_TIMEOUT, ASSISTANT_QUEUE
-
 # Define model parameters
-client = Model(tools=TOOLS, always_included_tools=[_end_conversation, _schedule_task, _start_subagent], name="voice", web_search=True)
-client.set_model(AI_MODEL)
-client.set_input_tokens(INPUT_TOKEN_LIMIT)
-client.set_output_tokens(OUTPUT_TOKEN_LIMIT)
+client = Model(tools=config.MODEL_TOOLS, always_included_tools=[_end_conversation, _schedule_task, _start_subagent], name="voice", web_search=True)
+client.set_model(config.AI_MODEL)
+client.set_input_tokens(config.INPUT_TOKEN_LIMIT)
+client.set_output_tokens(config.OUTPUT_TOKEN_LIMIT)
 
 # initalize audio
 pya = pyaudio.PyAudio()
@@ -33,7 +28,7 @@ async def run():
     # Define startup time to measure load times performance
     t0 = time.monotonic()
 
-    mic_stream, speaker_stream = open_streams(pya)
+    mic_stream, speaker_stream = audio_module.open_streams(pya)
     mic_stream.start_stream()
     speaker_stream.start_stream()
     log.info(f"[STARTUP] Streams open ({time.monotonic()-t0:.2f}s)")
@@ -41,11 +36,16 @@ async def run():
     # Load all heavy models in parallel background threads
     oww_task     = asyncio.create_task(asyncio.to_thread(audio_module.create_wake_word_model))
     whisper_task = asyncio.create_task(asyncio.to_thread(audio_module.init_whisper_and_vad))
-    speech_task  = asyncio.create_task(asyncio.to_thread(Speech))
+    if config.TTS_BACKEND == "qwen3":
+        speech_task = asyncio.create_task(
+            asyncio.to_thread(Qwen3Speech, config.QWEN3_VOICE_SAMPLE, config.QWEN3_MODEL)
+        )
+    else:
+        speech_task  = asyncio.create_task(asyncio.to_thread(Speech))
 
     oww_model = await oww_task
+    
     log.info(f"[STARTUP] Wake word model ready ({time.monotonic()-t0:.2f}s)")
-
     await whisper_task
     log.info(f"[STARTUP] Whisper model ready ({time.monotonic()-t0:.2f}s)")
 
@@ -54,11 +54,12 @@ async def run():
 
     # Everything is a go.
     log.info(f"[STARTUP] All models ready. Waiting for wake word. ({time.monotonic()-t0:.2f}s)")
+    asyncio.create_task(cron_scheduler.run())
 
     try:
         while True:
-            wake_task = asyncio.create_task(wait_for_wake_word(oww_model))
-            queue_task = asyncio.create_task(ASSISTANT_QUEUE.get())
+            wake_task = asyncio.create_task(audio_module.wait_for_wake_word(oww_model))
+            queue_task = asyncio.create_task(config.ASSISTANT_QUEUE.get())
             queue_prompt = None
 
             done, pending = await asyncio.wait(
@@ -82,17 +83,19 @@ async def run():
 
                 if tts_text is not None:
                     wav_path = await asyncio.to_thread(speech_obj.speak, tts_text)
-                    await play_wav_file(wav_path)
+                    await audio_module.play_wav_file(wav_path)
                     continue  # back to waiting
                 elif model_prompt is not None:
                     queue_prompt = model_prompt
                 else:
-                    # shouldn't ever happen but handle edge cases.
+                    # shouldn't ever happen but handle edge cases.s
                     continue
+            elif wake_task in done:
+                await audio_module.play_mp3_file("sounds/wake_sound.mp3")
 
             # Clear audio queues
-            flush_queues()
-            mic_buffer.clear()
+            audio_module.flush_queues()
+            audio_module.mic_buffer.clear()
 
             # queue_prompt being defined means that a scheduled task is running
             if queue_prompt is None:
@@ -104,13 +107,13 @@ async def run():
                 # queue_prompt being defined means that a scheduled task is running, no need to listen to microphone input.
                 if queue_prompt is None:
                     try:
-                        await asyncio.wait_for(wait_for_speech_start(), timeout=CONVERSATION_TIMEOUT)
+                        await asyncio.wait_for(audio_module.wait_for_speech_start(), timeout=config.CONVERSATION_TIMEOUT)
                     except asyncio.TimeoutError:
-                        log.info(f"No speech detected for {CONVERSATION_TIMEOUT}s, returning to WAITING")
+                        log.info(f"No speech detected for {config.CONVERSATION_TIMEOUT}s, returning to WAITING")
                         config.ASSISTANT_STATE = "WAITING"
                         break
 
-                    await wait_for_speech_end()
+                    await audio_module.wait_for_speech_end()
 
                 ts = time.monotonic()
 
@@ -119,10 +122,10 @@ async def run():
                 queue_prompt = None
 
                 if text is None:
-                    audio_snapshot = bytes(mic_buffer)
+                    audio_snapshot = bytes(audio_module.mic_buffer)
 
                     # Transcribe Audio
-                    text = await transcribe_audio(audio_snapshot)
+                    text = await audio_module.transcribe_audio(audio_snapshot)
                     log.info(f"Transcribed ({(time.monotonic() - ts):.2}s) {text}")
 
                 # Call model
@@ -133,13 +136,14 @@ async def run():
                 client.dump_context_window()
 
                 # Output response via TTS if conversation is still going.
-                if response and config.ASSISTANT_STATE == "LISTENING":
+                if response:
                     wav_path = await asyncio.to_thread(speech_obj.speak, response)
-                    await play_wav_file(wav_path)
+                    log.info(f"[tts] Latency: {(time.monotonic() - ts):.2}s")
+                    await audio_module.play_wav_file(wav_path)
 
                 # Clear mics after speaker output to avoid model talking to itself.
-                flush_queues()
-                mic_buffer.clear()
+                audio_module.flush_queues()
+                audio_module.mic_buffer.clear()
 
             mic_stream.stop_stream()
             mic_stream.start_stream()

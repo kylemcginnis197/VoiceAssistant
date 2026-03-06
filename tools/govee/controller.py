@@ -86,7 +86,6 @@ class Govee:
 
         return {"status": "Success", "updated": updated}
 
-
 try:
     govee_controller = Govee()
 except Exception:

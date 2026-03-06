@@ -18,9 +18,11 @@ def setup_logging():
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
 
-    for name in ("main", "audio", "speech", "model", "tools"):
+    for name in ("main", "audio", "speech", "model", "tools", "cron"):
         logging.getLogger(name).setLevel(logging.INFO)
 
 
 def get_logger(name: str) -> logging.Logger:
     return logging.getLogger(name)
+
+setup_logging()

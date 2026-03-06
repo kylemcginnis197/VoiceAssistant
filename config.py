@@ -1,63 +1,49 @@
 import pyaudio
 import asyncio
 
-# USER SETTINGS -------------------------------
+# USER SETTINGS -------------------------------------------------------
 
-# Seconds of silence after response before requiring the wake word to be said again.
-CONVERSATION_TIMEOUT = 10  
+CONVERSATION_TIMEOUT	= 10                                    # seconds of silence before requiring wake word again
+SILENCE_DURATION		= 1                                   # seconds of continuous silence before stopping recording
 
+AI_MODEL			= "claude-haiku-4-5-20251001"               # model used for the main voice agent
 
-# Seconds of continuous silence before returning
-SILENCE_DURATION = 1.5
+INPUT_TOKEN_LIMIT		= 75_000                                # max input tokens before context is compacted via summarization
+OUTPUT_TOKEN_LIMIT		= 4_096                                 # max tokens the model can generate per response
 
-# Model Details
-AI_MODEL = "claude-haiku-4-5-20251001"
+TOOL_EMBEDDINGS_RAG		= False                                 # dynamically include tools in context based on user query
+TOOL_RAG_TOP_K			= 10                                    # number of tools to retrieve when RAG is enabled
 
-# The maximum size of the context window before the model compacts everything (via summerization)
-INPUT_TOKEN_LIMIT = 75_000
-OUTPUT_TOKEN_LIMIT = 4_096
+SUBAGENT_MAX_RETRIES		= 2                                 # how many times the supervisor can reject before giving up
+SUBAGENT_SUPERVISOR_MODEL	= "claude-sonnet-4-6"               # model used to review subagent output
+SUBAGENT_MODEL				= "claude-haiku-4-5-20251001"       # model the subagent performs work with
 
-# Dynamically include tools in context window based on user query
-TOOL_EMBEDDINGS_RAG = False
-TOOL_RAG_TOP_K = 10
+# ---------------------------------------------------------------------
 
-# Subagent supervisor
-SUBAGENT_MAX_RETRIES = 2                            # how many times the supervisor can reject before giving up
-SUBAGENT_SUPERVISOR_MODEL = "claude-sonnet-4-6"     # model used to review subagent output
-SUBAGENT_MODEL = "claude-haiku-4-5-20251001"        # model subagent performs work with.
+# DEVELOPER SETTINGS -------------------------------------------------- DO NOT TOUCH
 
-# ---------------------------------------------
+FORMAT				= pyaudio.paInt16                           # audio sample format
+CHANNELS			= 1                                         # mono audio input
+SEND_SAMPLE_RATE	= 16000                                     # sample rate for microphone input (Hz)
+RECEIVE_SAMPLE_RATE	= 24000                                     # sample rate for audio output (Hz)
+CHUNK_SIZE			= 4096                                      # audio buffer size in samples
 
-# DEVELOPER SETTINGS --------------------------
+VAD_SPEECH_THRESHOLD	= 0.65                                  # Silero probability above which a window counts as speech
+VAD_WINDOW_SIZE			= 512                                   # minimum chunk size (samples) the model accepts at 16 kHz
 
-# Audio ingestion settings and parameters
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-SEND_SAMPLE_RATE = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE = 4096
+WAKE_WORD_THRESHOLD		= 0.5                                   # confidence threshold to trigger the assistant
 
-# Voice activity Detection
-VAD_SPEECH_THRESHOLD = 0.65 # Silero probability above which a window counts as speech
-VAD_WINDOW_SIZE = 512       # Minimum chunk size (samples) the model accepts at 16 kHz
+TTS_BACKEND			= "qwen3"                                   # "kokoro" | "qwen3"
+TTS_VOICE	= "am_puck"                                         # Kokoro voice ID
+TTS_SPEED	= 1.3                                               # playback speed multiplier
 
-# Open Wake Word
-WAKE_WORD_THRESHOLD = 0.5   # confidence threshold to trigger assistant
+QWEN3_VOICE_SAMPLE	= "sounds/voice.mp3"                        # path to reference MP3/WAV for voice cloning
+QWEN3_MODEL			= "Qwen/Qwen3-TTS-12Hz-0.6B-Base"           # Qwen3-TTS HuggingFace model ID (0.6B-Base or 1.7B-Base)
 
-# RVC Settings
-RVC_ENABLE = False
-RVC_MODEL_PATH = "KanyeWest808sandHeartBreakEra/KanyeWest808sandHeartBreakEra_375e_18750s.pth"
-RVC_INDEX_PATH = "KanyeWest808sandHeartBreakEra/KanyeWest808sandHeartBreakEra.index"
-RVC_F0_METHOD = "rmvpe" # pitch extraction method: harvest, crepe, rmvpe
-RVC_F0_UP_KEY = -2      # pitch shift in semitones
-RVC_INDEX_RATE = 0.81   # how much the index influences the timbre (0–1)
-RVC_PROTECT = 0.34      # protect voiceless consonants (0–0.5)
+# ---------------------------------------------------------------------
 
-# TTS (Kokoro)
-TTS_VOICE = "am_puck"   # kokoro voice ID
-TTS_SPEED = 1.3           # playback speed multiplier
-# ---------------------------------------------
+# MODEL STATE ---------------------------------------------------------
 
-# Model state ---------------------------------
-ASSISTANT_STATE = "WAITING"
+ASSISTANT_STATE		= "WAITING"
 ASSISTANT_QUEUE: asyncio.Queue[dict] = asyncio.Queue()
+MODEL_TOOLS			= []

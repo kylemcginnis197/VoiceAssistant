@@ -111,7 +111,7 @@ async def wait_for_wake_word(oww):
         audio = np.frombuffer(data, dtype=np.int16)
         prediction = oww.predict(audio)
         for name, score in prediction.items():
-            if score > WAKE_WORD_THRESHOLD:
+            if score > WAKE_WORD_THRESHOLD and name == "hey_jarvis":
                 return name
 
 
@@ -220,6 +220,21 @@ async def transcribe_audio(data: bytes) -> str:
     except Exception as e:
         log.error(f"Transcription exception: {e}")
         return ""
+
+
+async def play_mp3_file(path: str) -> None:
+    """Stream an .mp3 file through the speaker_queue and wait for playback to finish."""
+    import librosa
+    audio_f32, _ = librosa.load(path, sr=RECEIVE_SAMPLE_RATE, mono=True)
+    audio_int16 = (audio_f32 * 32767).astype(np.int16)
+    raw = audio_int16.tobytes()
+
+    chunk_bytes = CHUNK_SIZE * 2  # CHUNK_SIZE samples × 2 bytes per int16 sample
+    for i in range(0, len(raw), chunk_bytes):
+        speaker_queue.put(raw[i : i + chunk_bytes])
+
+    duration = len(audio_int16) / RECEIVE_SAMPLE_RATE
+    await asyncio.sleep(duration + 0.3)  # small buffer to let the last chunk drain
 
 
 async def play_wav_file(path: str) -> None:

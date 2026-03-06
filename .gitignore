@@ -3,7 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Test api 
 test_spotify_api.ipynb
+
+workout_data.ipynb
+
+# temp files
 session/
 
 # C extensions

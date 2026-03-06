@@ -2,13 +2,19 @@ import httpx
 from os import getenv
 from pydantic import BaseModel
 
+class CallWeatherArgs(BaseModel):
+    pass
+
 class WeatherAPI:
     def __init__(self, api_key: str, zip_code: str = "68106"):
         self.ZIP_CODE = zip_code
         self.API_KEY = api_key
         self.BASE_URL = "http://api.weatherapi.com/v1"
 
-    async def get_current_weather(self) -> str | None:
+    async def get_current_weather(self, args: CallWeatherArgs) -> str | None:
+        if self.API_KEY is None or not len(self.API_KEY):
+            return None
+
         async with httpx.AsyncClient() as client:
             try:
                 params = {"key": self.API_KEY, "q": self.ZIP_CODE}
@@ -32,11 +38,4 @@ class WeatherAPI:
                 f"conditions = {conditions}"
             )
 
-_weather = WeatherAPI(api_key=getenv("WEATHER_API") or "", zip_code=68106)
-
-class CallWeatherArgs(BaseModel):
-    pass
-
-async def call_weather_api(args: CallWeatherArgs):
-    """Gets the current weather at the user's location / USE ANYTIME USER ASKS FOR WEATHER"""
-    return await _weather.get_current_weather()
+weather = WeatherAPI(api_key=getenv("WEATHER_API") or None, zip_code=68106)

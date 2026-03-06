@@ -1,15 +1,15 @@
 import os
-import tempfile
-from datetime import datetime
-
 import numpy as np
 import soundfile as sf
 import torch
+from kokoro import KPipeline
+from kokoro import KPipeline
+from config import RECEIVE_SAMPLE_RATE, TTS_SPEED, TTS_VOICE, QWEN3_MODEL
+from log import get_logger
+from datetime import datetime
 
-# ---------------------------------------------------------------------------
-# PyTorch 2.6 compatibility: weights_only now defaults to True, breaking
-# fairseq / rvc_python checkpoints.
-# ---------------------------------------------------------------------------
+log = get_logger("speech")
+
 if not hasattr(torch, "_orig_load"):
     torch._orig_load = torch.load
 
@@ -19,35 +19,10 @@ def _patched_torch_load(*args, **kwargs):
 
 torch.load = _patched_torch_load
 
-from kokoro import KPipeline
-
-try:
-    from rvc_python.infer import RVCInference
-except ImportError:
-    RVCInference = None
-
-from config import (
-    RECEIVE_SAMPLE_RATE,
-    RVC_ENABLE,
-    RVC_F0_METHOD,
-    RVC_F0_UP_KEY,
-    RVC_INDEX_PATH,
-    RVC_INDEX_RATE,
-    RVC_MODEL_PATH,
-    RVC_PROTECT,
-    TTS_SPEED,
-    TTS_VOICE,
-)
-from log import get_logger
-
-log = get_logger("speech")
-
 OUTPUT_DIR = "session"
-
 
 def _select_device() -> str:
     return "cuda:0" if torch.cuda.is_available() else "cpu:0"
-
 
 class Speech:
     """
@@ -57,11 +32,8 @@ class Speech:
     are as fast as possible. Each call to speak() saves a timestamped .wav
     file under speech_output/.
     """
-
     def __init__(
         self,
-        model_path: str = RVC_MODEL_PATH,
-        index_path: str = RVC_INDEX_PATH,
         voice: str = TTS_VOICE,
         speed: float = TTS_SPEED,
     ):
@@ -77,37 +49,6 @@ class Speech:
         except Exception as e:
             raise RuntimeError(f"[Speech] Kokoro init failed: {e}") from e
 
-        # --- RVC engine ---
-        if RVC_ENABLE:
-            try:
-                self.rvc = RVCInference(device=self.device)
-                self.rvc.set_params(
-                    f0method=RVC_F0_METHOD,
-                    f0up_key=RVC_F0_UP_KEY,
-                    index_rate=RVC_INDEX_RATE,
-                    protect=RVC_PROTECT,
-                    resample_sr=RECEIVE_SAMPLE_RATE,
-                )
-            except Exception as e:
-                raise RuntimeError(f"[Speech] RVC init failed: {e}") from e
-
-            self.load_rvc_model(model_path, index_path)
-
-    def load_rvc_model(self, model_path: str, index_path: str = "") -> None:
-        """Load (or hot-swap) the RVC model. Accepts absolute or relative paths."""
-        model_path = os.path.abspath(model_path)
-        index_path = os.path.abspath(index_path) if index_path else ""
-
-        if not os.path.isfile(model_path):
-            raise FileNotFoundError(f"[Speech] Model not found: {model_path}")
-        if index_path and not os.path.isfile(index_path):
-            raise FileNotFoundError(f"[Speech] Index not found: {index_path}")
-
-        try:
-            self.rvc.load_model(model_path, index_path=index_path)
-        except Exception as e:
-            raise RuntimeError(f"[Speech] Failed to load RVC model: {e}") from e
-
     def speak(self, text: str) -> str:
         """
         Convert text → Kokoro TTS → RVC voice conversion → timestamped .wav.
@@ -119,10 +60,6 @@ class Speech:
             raise ValueError("[Speech] speak() called with empty text.")
 
         tts_audio = self._tts(text)
-
-        if RVC_ENABLE:
-            tts_audio = self._rvc(tts_audio)
-
         out_path = os.path.join(OUTPUT_DIR, "model_output.wav")
         sf.write(out_path, tts_audio, RECEIVE_SAMPLE_RATE)
         return out_path
@@ -138,23 +75,72 @@ class Speech:
             raise RuntimeError("[Speech] Kokoro returned no audio chunks.")
         return np.concatenate(chunks)
 
-    def _rvc(self, audio: np.ndarray) -> np.ndarray:
-        tmp_in = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        tmp_out = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        in_path, out_path = tmp_in.name, tmp_out.name
-        tmp_in.close()
-        tmp_out.close()
-        try:
-            sf.write(in_path, audio, 24_000)
-            self.rvc.infer_file(input_path=in_path, output_path=out_path)
-            result, _ = sf.read(out_path, dtype="float32")
-            return result
-        except Exception as e:
-            log.warning(f"RVC conversion failed ({e}), returning raw TTS audio.")
-            return audio
-        finally:
-            for path in (in_path, out_path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+
+class Qwen3Speech:
+    """
+    Qwen3-TTS voice cloning pipeline.
+
+    Clones the voice from a reference MP3/WAV file supplied at init time.
+    The reference audio is auto-transcribed with Whisper so the user only
+    needs to provide the audio file path.
+    """
+
+    def __init__(self, voice_sample: str, model_id: str = QWEN3_MODEL):
+        import io
+        import contextlib
+        import whisper as _whisper
+        with contextlib.redirect_stdout(io.StringIO()):
+            from qwen_tts import Qwen3TTSModel
+
+        if not voice_sample:
+            raise ValueError("[Qwen3Speech] QWEN3_VOICE_SAMPLE must be set in config.py")
+
+        self.voice_sample = voice_sample
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+        device = _select_device()
+        # Qwen3TTSModel expects "cuda" or "cpu", not "cuda:0"
+        device_map = "cuda" if device.startswith("cuda") else "cpu"
+
+        log.info(f"[Qwen3Speech] Loading model {model_id} on {device_map}...")
+        self.model = Qwen3TTSModel.from_pretrained(
+            model_id,
+            device_map=device_map,
+            torch_dtype=torch.bfloat16,
+        )
+
+        # Suppress transformers generation info messages (e.g. pad_token_id warnings)
+        import logging as _logging
+        _logging.getLogger("transformers.generation.utils").setLevel(_logging.ERROR)
+
+        log.info("[Qwen3Speech] Transcribing reference audio with Whisper...")
+        w_model = _whisper.load_model("base")
+        result = w_model.transcribe(voice_sample)
+        self.ref_text = result["text"].strip()
+        log.info(f"[Qwen3Speech] Reference text: {self.ref_text!r}")
+
+        # Pre-encode the reference audio once so every speak() call skips that work
+        log.info("[Qwen3Speech] Pre-building voice clone prompt...")
+        self.voice_prompt = self.model.create_voice_clone_prompt(
+            ref_audio=voice_sample,
+            ref_text=self.ref_text,
+        )
+        log.info("[Qwen3Speech] Voice clone prompt ready.")
+
+    def speak(self, text: str) -> str:
+        if not text or not text.strip():
+            raise ValueError("[Qwen3Speech] speak() called with empty text.")
+
+        import librosa
+
+        wavs, sr = self.model.generate_voice_clone(
+            text=text,
+            language="English",
+            voice_clone_prompt=self.voice_prompt,
+        )
+
+        # Resample from model output rate (12000 Hz) to playback rate (24000 Hz)
+        audio = librosa.resample(np.asarray(wavs, dtype=np.float32).squeeze(), orig_sr=sr, target_sr=RECEIVE_SAMPLE_RATE)
+        out_path = os.path.join(OUTPUT_DIR, "model_output.wav")
+        sf.write(out_path, audio, RECEIVE_SAMPLE_RATE)
+        return out_path

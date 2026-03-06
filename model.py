@@ -5,9 +5,7 @@ import json
 import time
 from pydantic import BaseModel, Field
 from config import TOOL_EMBEDDINGS_RAG, TOOL_RAG_TOP_K
-
 from log import get_logger
-
 log = get_logger("model")
 
 def get_pydantic_parameters(tool: object):
