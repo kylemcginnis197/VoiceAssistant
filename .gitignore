@@ -3,6 +3,8 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+z_movies_rec_api.ipynb
+
 # Test api 
 test_spotify_api.ipynb
 

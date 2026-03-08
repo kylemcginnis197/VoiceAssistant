@@ -9,6 +9,7 @@ from tools.tools import _end_conversation
 from tools.scheduler import _schedule_task
 from tools.subagents import _start_subagent
 from cron import cron_scheduler
+from webhook import start as start_webhook
 from log import get_logger
 
 # Add logger
@@ -55,6 +56,9 @@ async def run():
     # Everything is a go.
     log.info(f"[STARTUP] All models ready. Waiting for wake word. ({time.monotonic()-t0:.2f}s)")
     asyncio.create_task(cron_scheduler.run())
+    if config.WEBHOOKS:
+        start_webhook(asyncio.get_event_loop())
+        log.info(f"[STARTUP] {len(config.WEBHOOKS)} webhook listener(s) started")
 
     try:
         while True:
@@ -138,7 +142,7 @@ async def run():
                 # Output response via TTS if conversation is still going.
                 if response:
                     wav_path = await asyncio.to_thread(speech_obj.speak, response)
-                    log.info(f"[tts] Latency: {(time.monotonic() - ts):.2}s")
+                    log.info(f"[tts] Latency: {round(time.monotonic() - ts)}s")
                     await audio_module.play_wav_file(wav_path)
 
                 # Clear mics after speaker output to avoid model talking to itself.

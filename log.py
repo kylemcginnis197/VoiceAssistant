@@ -18,7 +18,7 @@ def setup_logging():
     root.addHandler(file_handler)
     root.addHandler(stream_handler)
 
-    for name in ("main", "audio", "speech", "model", "tools", "cron"):
+    for name in ("main", "audio", "speech", "model", "tools", "cron", "webhook"):
         logging.getLogger(name).setLevel(logging.INFO)
 
 

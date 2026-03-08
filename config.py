@@ -1,5 +1,6 @@
 import pyaudio
 import asyncio
+from tools.available_webhooks import WEBHOOKS
 
 # USER SETTINGS -------------------------------------------------------
 
@@ -31,14 +32,15 @@ CHUNK_SIZE			= 4096                                      # audio buffer size in 
 VAD_SPEECH_THRESHOLD	= 0.65                                  # Silero probability above which a window counts as speech
 VAD_WINDOW_SIZE			= 512                                   # minimum chunk size (samples) the model accepts at 16 kHz
 
-WAKE_WORD_THRESHOLD		= 0.5                                   # confidence threshold to trigger the assistant
+WAKE_WORD_THRESHOLD		= 0.7                                   # confidence threshold to trigger the assistant
 
-TTS_BACKEND			= "qwen3"                                   # "kokoro" | "qwen3"
+TTS_BACKEND			= "kokoro"                                   # "kokoro" | "qwen3"
 TTS_VOICE	= "am_puck"                                         # Kokoro voice ID
 TTS_SPEED	= 1.3                                               # playback speed multiplier
 
 QWEN3_VOICE_SAMPLE	= "sounds/voice.mp3"                        # path to reference MP3/WAV for voice cloning
 QWEN3_MODEL			= "Qwen/Qwen3-TTS-12Hz-0.6B-Base"           # Qwen3-TTS HuggingFace model ID (0.6B-Base or 1.7B-Base)
+
 
 # ---------------------------------------------------------------------
 
